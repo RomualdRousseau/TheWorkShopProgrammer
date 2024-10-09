@@ -1,9 +1,9 @@
 from typing import Optional
 
 from .base import SourceBase
-from .snowflake_source import SnowflakeSource
-from .mssql_source import MsSqlSource
 from .duckdb_cache import DuckdbCache
+from .sources.snowflake_source import SnowflakeSource
+from .sources.mssql_source import MsSqlSource
 
 
 def get_source(

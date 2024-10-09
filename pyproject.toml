@@ -7,12 +7,19 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-numpy = "^2.0.1"
+duckdb = "^1.1.1"
+pyarrow = "^17.0.0"
+pyodbc = "^5.1.0"
+numpy = "^2.1.2"
 matplotlib = "^3.9.2"
+python-tds = "^1.15.0"
+pyopenssl = "^24.2.1"
+bitarray = "^2.9.2"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.29.5"
 pixi = "^1.0.1"
+python-dotenv = "^1.0.1"
 
 [build-system]
 requires = ["poetry-core"]

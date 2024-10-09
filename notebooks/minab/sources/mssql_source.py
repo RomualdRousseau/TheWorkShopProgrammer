@@ -5,10 +5,10 @@ import pytds
 from typing import Optional, NoReturn
 from datetime import datetime
 
-from .colorize import colorize
-from .base import CacheBase, ReadResultBase
-from .read_result import ReadResult
-from .duckdb_cache import DuckdbCache
+from ..colorize import colorize
+from ..base import CacheBase, ReadResultBase
+from ..read_result import ReadResult
+from ..duckdb_cache import DuckdbCache
 
 
 class MsSqlSource:
