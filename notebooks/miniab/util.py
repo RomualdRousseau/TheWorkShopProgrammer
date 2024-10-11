@@ -18,5 +18,5 @@ def get_source(
         return MsSqlSource(config, streams, sync)
 
 
-def get_default_cache() -> DuckdbCache:
-    return DuckdbCache()
+def get_default_cache(name: str = "default_cache") -> DuckdbCache:
+    return DuckdbCache(name)

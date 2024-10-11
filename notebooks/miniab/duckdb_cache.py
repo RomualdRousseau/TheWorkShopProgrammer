@@ -8,20 +8,21 @@ import pyarrow
 
 class DuckdbCache:
 
-    def __init__(self):
-        if not os.path.exists(".cache"):
-            os.mkdir(".cache")
-        self._processor = duckdb.connect(".cache/cache.duckdb")
+    def __init__(self, name: str):
+        path = f".cache/{name}"
+        if not os.path.exists(path):
+            os.makedirs(path)
+        self._processor = duckdb.connect(f"{path}/{name}.duckdb")
 
     @property
     def processor(self) -> Any:
         return self._processor
 
     def get_arrow_dataset(
-        self, stream_name: str, max_chunk_size: int = 100000
+        self, stream_name: str, max_chunk_size: int = 100_000
     ) -> pyarrow.lib.Table:
-        query = self.processor.sql(f"SELECT * FROM {stream_name}")
-        return query.to_arrow_table(max_chunk_size)
+        sql_query = self._processor.sql(f"SELECT * FROM \"{stream_name}\"")
+        return sql_query.to_arrow_table(max_chunk_size)
 
     def __str__(self) -> str:
         return "DuckdbCache"

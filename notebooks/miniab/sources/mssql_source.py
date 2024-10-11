@@ -75,7 +75,6 @@ class MsSqlSource:
                 print(f" * Received records for {len(self.streams)} streams:")
 
                 for stream in self.selected_streams:
-                    print(stream)
                     with conn.cursor() as cursor:
                         table_schema = self._generate_table_schema(stream, cursor)
                         cache.processor.sql(table_schema)
@@ -84,19 +83,25 @@ class MsSqlSource:
                         cursor.execute(sql_query)
 
                         record_num = 0
-                        while True:
-                            batch = cursor.fetchmany(100_000)
-                            if not batch:
-                                break
-
-                            batch_df = pd.DataFrame.from_records(batch, columns=[col[0] for col in cursor.description])
+                        for batch in self._get_result_batches(cursor):
                             try:
-                                cache.processor.sql(
-                                    f"INSERT INTO \"{stream}\" SELECT * FROM batch_df;"
+                                batch_df = pd.DataFrame.from_records(
+                                    batch,
+                                    columns=[col[0] for col in cursor.description],
                                 )
-                            except:  # noqa: E722
-                                print(batch_df)
-                            record_num += batch_df.shape[0]
+                                sql_insert = (
+                                    f'INSERT INTO "{stream}" SELECT * FROM batch_df;'
+                                )
+                                cache.processor.sql(sql_insert)
+                            except Exception as e:
+                                print(
+                                    colorize(
+                                        f"    {record_num} {stream}: {e}", color="red"
+                                    )
+                                )
+                            else:
+                                record_num += batch_df.shape[0]
+
                         print(f"  - {record_num} {stream}")
 
                         total_record_num += record_num
@@ -131,11 +136,19 @@ class MsSqlSource:
         )
         return pyodbc.connect(conn_str)
 
+    def _get_result_batches(self, data: pyodbc.Cursor, max_chunk_size: int = 100_000):
+        while True:
+            batch = data.fetchmany(max_chunk_size)
+            if not batch:
+                break
+            yield batch
+
     def _generate_table_schema(self, stream: str, data: pyodbc.Cursor) -> str:
         column_names = [
-            f"\"{column[3]}\" {self._to_sql_type(column)}" for column in data.columns(table=stream)
+            f'"{column[3]}" {self._to_sql_type(column)}'
+            for column in data.columns(table=stream)
         ]
-        create_table = f"CREATE OR REPLACE TABLE \"{stream}\" ("
+        create_table = f'CREATE OR REPLACE TABLE "{stream}" ('
         create_table += ",".join(column_names)
         create_table += ")"
         return create_table
