@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import pytds
+import pyodbc
+import pandas as pd
 
 from typing import Optional, NoReturn
 from datetime import datetime
@@ -21,11 +22,12 @@ class MsSqlSource:
         self.sync = sync
 
         if self.sync:
-            with self._connect() as conn:
-                if streams is None:
-                    show_tables = "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE';"
-                    tables = conn.cursor().execute(show_tables)
-                    self.streams = [table[1] for table in tables]
+            if streams is None:
+                with self._connect() as conn:
+                    with conn.cursor() as cursor:
+                        show_tables = "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='dbo' AND TABLE_TYPE='BASE TABLE';"
+                        rows = cursor.execute(show_tables)
+                        self.streams = [row[2] for row in rows]
 
         self.selected_streams = []
 
@@ -39,10 +41,12 @@ class MsSqlSource:
         if not self.sync:
             return
         with self._connect() as conn:
-            show_tables = "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE';"
-            data = conn.cursor().execute(show_tables)
-            if data is None:
-                raise Exception("Check failed")
+            with conn.cursor() as cursor:
+                show_tables = "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE';"
+                try:
+                    cursor.execute(show_tables)
+                except:  # noqa: E722
+                    raise Exception("Check failed")
 
     def read(self, cache: Optional[CacheBase]) -> ReadResultBase:
         if cache is None:
@@ -71,19 +75,27 @@ class MsSqlSource:
                 print(f" * Received records for {len(self.streams)} streams:")
 
                 for stream in self.selected_streams:
+                    print(stream)
                     with conn.cursor() as cursor:
-                        sql_query = f'SELECT * FROM "{stream}"'
-                        data = cursor.execute(sql_query)
-
-                        table_schema = self._generate_table_schema(stream, data)
+                        table_schema = self._generate_table_schema(stream, cursor)
                         cache.processor.sql(table_schema)
 
+                        sql_query = f'SELECT * FROM "{stream}"'
+                        cursor.execute(sql_query)
+
                         record_num = 0
-                        for batch in data.get_result_batches():
-                            batch_df = batch.to_pandas()  # noqa: F841
-                            cache.processor.sql(
-                                f"INSERT INTO {stream} SELECT * FROM batch_df;"
-                            )
+                        while True:
+                            batch = cursor.fetchmany(100_000)
+                            if not batch:
+                                break
+
+                            batch_df = pd.DataFrame.from_records(batch, columns=[col[0] for col in cursor.description])
+                            try:
+                                cache.processor.sql(
+                                    f"INSERT INTO \"{stream}\" SELECT * FROM batch_df;"
+                                )
+                            except:  # noqa: E722
+                                print(batch_df)
                             record_num += batch_df.shape[0]
                         print(f"  - {record_num} {stream}")
 
@@ -108,35 +120,79 @@ class MsSqlSource:
     def __str__(self) -> str:
         return "SnowflakeSource"
 
-    def _connect(self) -> pytds.Connection:
-        return pytds.connect(
-            dsn=self.config["server"],
-            database=self.config["database"],
-            user=self.config["uid"],
-            password=self.config["pwd"],
+    def _connect(self) -> pyodbc.Connection:
+        sql_server_drivers = list(filter(lambda x: "SQL Server" in x, pyodbc.drivers()))
+        conn_str = (
+            f"DRIVER={{{sql_server_drivers[0]}}};"
+            f'SERVER=tcp:{self.config["server"]};PORT=1433;'
+            f'DATABASE={self.config["database"]};'
+            f'UID={self.config["uid"]};'
+            f'PWD={self.config["pwd"]}'
         )
+        return pyodbc.connect(conn_str)
 
-    def _generate_table_schema(self, stream: str, data: pytds.Cursor) -> str:
+    def _generate_table_schema(self, stream: str, data: pyodbc.Cursor) -> str:
         column_names = [
-            f"{column[0]} {self._to_sql_type(column)}" for column in data.description
+            f"\"{column[3]}\" {self._to_sql_type(column)}" for column in data.columns(table=stream)
         ]
-        create_table = f"CREATE OR REPLACE TABLE {stream} ("
+        create_table = f"CREATE OR REPLACE TABLE \"{stream}\" ("
         create_table += ",".join(column_names)
         create_table += ")"
         return create_table
 
     def _to_sql_type(self, column: list) -> str:
-        print(column)
-        match column[1]:
-            case pytds.INTEGER:
+        types = column[5].split()
+        type, _ = (types[0], "") if len(types) == 1 else column[5].split()
+        match type:
+            case "tinyint":
+                return "TINYINT"
+            case "smallint":
+                return "SMALLINT"
+            case "int":
                 return "INTEGER"
-            case pytds.DECIMAL:
-                return f"DECIMAL({column[4]},{column[5]})"
-            case pytds.REAL:
+            case "bigint":
+                return "BIGINT"
+            case "bit":
+                return "BIT"
+
+            case "numeric":
+                return f"DECIMAL({column[6]},{column[8]})"
+            case "decimal":
+                return f"DECIMAL({column[6]},{column[8]})"
+            case "money":
+                return f"DECIMAL({column[6]},{column[8]})"
+
+            case "float":
+                return "FLOAT"
+            case "double":
+                return "DOUBLE"
+            case "real":
                 return "REAL"
-            case pytds.STRING:
-                return f"VARCHAR({column[2]})"
-            case pytds.DATETIME:
+
+            case "char":
+                return f"VARCHAR({column[6]})"
+            case "varchar":
+                return f"VARCHAR({column[6]})"
+            case "nchar":
+                return f"VARCHAR({column[6]})"
+            case "nvarchar":
+                return f"VARCHAR({column[6]})"
+            case "ntext":
+                return f"VARCHAR({column[6]})"
+
+            case "date":
                 return "DATE"
+            case "datetime":
+                return "DATE"
+            case "datetime2":
+                return "DATE"
+            case "time":
+                return "TIME"
+            case "timestamp":
+                return "TIMESTAMP"
+
+            case "uniqueidentifier":
+                return "UUID"
+
             case _:
-                raise Exception("Invalid or not supported type")
+                raise Exception("Invalid or not supported type: " + str(column))

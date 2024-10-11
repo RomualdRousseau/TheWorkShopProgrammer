@@ -23,7 +23,7 @@ help:
 # install poetry with no root
 initialize:
     poetry install --no-root
-    python -m ipykernel install --prefix .venv --name kernel-py311
+    poetry run python -m ipykernel install --prefix .venv --name kernel-py311
 
 # update poetry with
 update:

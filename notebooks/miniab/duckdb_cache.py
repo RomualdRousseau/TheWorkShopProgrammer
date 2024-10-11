@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Any
 
+import os
 import duckdb
 import pyarrow
 
@@ -8,6 +9,8 @@ import pyarrow
 class DuckdbCache:
 
     def __init__(self):
+        if not os.path.exists(".cache"):
+            os.mkdir(".cache")
         self._processor = duckdb.connect(".cache/cache.duckdb")
 
     @property
