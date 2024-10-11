@@ -84,25 +84,11 @@ class MsSqlSource:
 
                         record_num = 0
                         for batch in self._get_result_batches(cursor):
-                            try:
-                                batch_df = pd.DataFrame.from_records(
-                                    batch,
-                                    columns=[col[0] for col in cursor.description],
-                                )
-                                sql_insert = (
-                                    f'INSERT INTO "{stream}" SELECT * FROM batch_df;'
-                                )
-                                cache.processor.sql(sql_insert)
-                            except Exception as e:
-                                print(
-                                    colorize(
-                                        f"    {record_num} {stream}: {e}", color="red"
-                                    )
-                                )
-                            else:
-                                record_num += batch_df.shape[0]
-
-                        print(f"  - {record_num} {stream}")
+                            print(f"  - {record_num} {stream} (loading ...)", end="\r")
+                            batch_df = self._to_pandas(cursor, batch)
+                            cache.processor.sql(f"INSERT INTO {stream} SELECT * FROM batch_df;")
+                            record_num += batch_df.shape[0]
+                        print(f"  - {record_num} {stream}                  ")
 
                         total_record_num += record_num
 
@@ -142,6 +128,15 @@ class MsSqlSource:
             if not batch:
                 break
             yield batch
+
+    def _to_pandas(self, cursor: pyodbc.Cursor, data: list[pyodbc.Row]) -> pd.DataFrame:
+        return pd.DataFrame.from_records(
+            data,
+            columns=[col[0] for col in cursor.description],
+        ).map(
+            lambda x: str(x) if not isinstance(x, bool) else x,
+            na_action="ignore",
+        )
 
     def _generate_table_schema(self, stream: str, data: pyodbc.Cursor) -> str:
         column_names = [

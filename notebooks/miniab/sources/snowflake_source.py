@@ -75,10 +75,11 @@ class SnowflakeSource:
 
                     record_num = 0
                     for batch in data.get_result_batches():
-                        batch_df = batch.to_pandas()  # noqa: F841
+                        print(f"  - {record_num} {stream} (loading ...)", end="\r")
+                        batch_df = batch.to_pandas()
                         cache.processor.sql(f"INSERT INTO {stream} SELECT * FROM batch_df;")
                         record_num += batch_df.shape[0]
-                    print(f"  - {record_num} {stream}")
+                    print(f"  - {record_num} {stream}                  ")
 
                     total_record_num += record_num
 
