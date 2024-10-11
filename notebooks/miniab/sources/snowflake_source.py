@@ -21,11 +21,8 @@ class SnowflakeSource:
         self.sync = sync
 
         if self.sync:
-            with self._connect() as conn:
-                if streams is None:
-                    show_tables = "SHOW TERSE TABLES;"
-                    tables = conn.cursor().execute(show_tables)
-                    self.streams = [table[1] for table in tables]
+            if streams is None:
+                self.streams = self.get_available_streams()
 
         self.selected_streams = []
 
@@ -34,6 +31,12 @@ class SnowflakeSource:
 
     def select_streams(self, streams: list[str]) -> NoReturn:
         self.selected_streams = streams
+
+    def get_available_streams(self) -> list[str]:
+        with self._connect() as conn:
+            show_tables = "SHOW TERSE TABLES;"
+            tables = conn.cursor().execute(show_tables)
+            return [table[1] for table in tables]
 
     def check(self) -> NoReturn:
         if not self.sync:
@@ -77,7 +80,7 @@ class SnowflakeSource:
                     for batch in data.get_result_batches():
                         print(f"  - {record_num:,} {stream} (loading ...)", end="\r")
                         batch_df = batch.to_pandas()
-                        cache.processor.sql(f"INSERT INTO {stream} SELECT * FROM batch_df;")
+                        cache.processor.sql(f'INSERT INTO "{stream}" SELECT * FROM batch_df;')
                         record_num += batch_df.shape[0]
                     print(f"  - {record_num:,} {stream}                  ")
 

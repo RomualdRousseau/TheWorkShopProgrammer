@@ -23,11 +23,7 @@ class MsSqlSource:
 
         if self.sync:
             if streams is None:
-                with self._connect() as conn:
-                    with conn.cursor() as cursor:
-                        show_tables = "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='dbo' AND TABLE_TYPE='BASE TABLE';"
-                        rows = cursor.execute(show_tables)
-                        self.streams = [row[2] for row in rows]
+                self.streams = self.get_available_streams()
 
         self.selected_streams = []
 
@@ -36,6 +32,13 @@ class MsSqlSource:
 
     def select_streams(self, streams: list[str]) -> NoReturn:
         self.selected_streams = streams
+
+    def get_available_streams(self) -> list[str]:
+        with self._connect() as conn:
+            with conn.cursor() as cursor:
+                show_tables = f"SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='{self.config['schema']}' AND TABLE_TYPE='BASE TABLE';"
+                rows = cursor.execute(show_tables)
+                return [row[2] for row in rows]
 
     def check(self) -> NoReturn:
         if not self.sync:
@@ -74,23 +77,42 @@ class MsSqlSource:
                 )
                 print(f" * Received records for {len(self.streams)} streams:")
 
+                existing_streams = [
+                    table[0] for table in cache.processor.sql("SHOW TABLES;").fetchall()
+                ]
+
                 for stream in self.selected_streams:
                     with conn.cursor() as cursor:
-                        table_schema = self._generate_table_schema(stream, cursor)
-                        cache.processor.sql(table_schema)
-
-                        sql_query = f'SELECT * FROM "{stream}"'
-                        cursor.execute(sql_query)
-
                         record_num = 0
-                        for batch in self._get_result_batches(cursor):
-                            print(f"  - {record_num:,} {stream} (loading ...)", end="\r")
-                            batch_df = self._to_pandas(cursor, batch)
-                            cache.processor.sql(f"INSERT INTO {stream} SELECT * FROM batch_df;")
-                            record_num += batch_df.shape[0]
-                        print(f"  - {record_num:,} {stream}                  ")
+                        skip = False
 
-                        total_record_num += record_num
+                        if stream in existing_streams:
+                            sql_query = f'SELECT COUNT(*) FROM "{stream}"'
+                            record_num = cursor.execute(sql_query).fetchval()
+                            record_num2, = cache.processor.sql(sql_query).fetchone()
+                            skip = record_num == record_num2
+
+                        if not skip:
+                            table_schema = self._generate_table_schema(stream, cursor)
+                            cache.processor.sql(table_schema)
+
+                            sql_query = f'SELECT * FROM "{stream}"'
+                            cursor.execute(sql_query)
+
+                            record_num = 0
+                            for batch in self._get_result_batches(cursor):
+                                print(
+                                    f"  - {record_num:,} {stream} (loading)",
+                                    end="\r",
+                                )
+                                batch_df = self._to_pandas(cursor, batch)
+                                cache.processor.sql(
+                                    f'INSERT INTO "{stream}" SELECT * FROM batch_df;'
+                                )
+                                record_num += batch_df.shape[0]
+
+                            print(f"  - {record_num:,} {stream}                  ")
+                            total_record_num += record_num
 
             print(f" * Cached {total_record_num:,} records.")
 
