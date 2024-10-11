@@ -84,15 +84,15 @@ class MsSqlSource:
 
                         record_num = 0
                         for batch in self._get_result_batches(cursor):
-                            print(f"  - {record_num} {stream} (loading ...)", end="\r")
+                            print(f"  - {record_num:,} {stream} (loading ...)", end="\r")
                             batch_df = self._to_pandas(cursor, batch)
                             cache.processor.sql(f"INSERT INTO {stream} SELECT * FROM batch_df;")
                             record_num += batch_df.shape[0]
-                        print(f"  - {record_num} {stream}                  ")
+                        print(f"  - {record_num:,} {stream}                  ")
 
                         total_record_num += record_num
 
-            print(f" * Cached {total_record_num} records.")
+            print(f" * Cached {total_record_num:,} records.")
 
             print(
                 f" * Finished reading from source at {datetime.now().strftime('%H:%M:%S')}."
@@ -109,7 +109,7 @@ class MsSqlSource:
         return ReadResult(cache, total_record_num)
 
     def __str__(self) -> str:
-        return "SnowflakeSource"
+        return "MsSqlSource"
 
     def _connect(self) -> pyodbc.Connection:
         sql_server_drivers = list(filter(lambda x: "SQL Server" in x, pyodbc.drivers()))
