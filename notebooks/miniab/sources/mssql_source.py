@@ -115,10 +115,10 @@ class MsSqlSource:
         sql_server_drivers = list(filter(lambda x: "SQL Server" in x, pyodbc.drivers()))
         conn_str = (
             f"DRIVER={{{sql_server_drivers[0]}}};"
-            f'SERVER=tcp:{self.config["server"]};PORT=1433;'
+            f'SERVER=tcp:{self.config["host"]};PORT={self.config["port"]};'
             f'DATABASE={self.config["database"]};'
-            f'UID={self.config["uid"]};'
-            f'PWD={self.config["pwd"]}'
+            f'UID={self.config["username"]};'
+            f'PWD={self.config["password"]}'
         )
         return pyodbc.connect(conn_str)
 
