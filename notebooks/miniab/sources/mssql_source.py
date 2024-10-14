@@ -8,7 +8,6 @@ from typing import Generator, Optional, NoReturn
 
 from .base_source import BaseSource
 from ..base import Processor
-from ..caches.duckdb_cache import DuckdbCache
 
 
 class MsSqlSource(BaseSource):
@@ -84,13 +83,12 @@ class MsSqlProcessor:
 
         return catalog
 
-    def write_stream_to_cache(
-        self, cache: DuckdbCache, stream: str
-    ) -> Generator[int, None, None]:
+    def generate_table_schema(self, stream: str) -> str:
         with self.conn.cursor() as cursor:
-            table_schema = self._generate_table_schema(stream, cursor)
-            cache.get_sql_engine().sql(table_schema)
+            return self._generate_table_schema(stream, cursor)
 
+    def get_result_batches(self, stream: str) -> Generator[pd.DataFrame, None, None]:
+        with self.conn.cursor() as cursor:
             sql_query = dedent(
                 f"""
                 SELECT
@@ -100,22 +98,8 @@ class MsSqlProcessor:
                 """
             )
             cursor.execute(sql_query)
-
-            record_num = 0
             for batch in self._get_result_batches(cursor):
-                batch_df = self._to_pandas(cursor, batch)
-                sql_query = dedent(
-                    f"""
-                    INSERT INTO "{stream}"
-                    SELECT
-                        *
-                    FROM
-                        batch_df;
-                    """
-                )
-                cache.get_sql_engine().sql(sql_query)
-                record_num += batch_df.shape[0]
-                yield record_num
+                yield self._to_pandas(cursor, batch)
 
     def _get_driver(self) -> str:
         return next(filter(lambda x: "SQL Server" in x, pyodbc.drivers()))

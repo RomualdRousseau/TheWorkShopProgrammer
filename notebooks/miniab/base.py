@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Generator, Optional, Protocol, NoReturn, Any
 
 import pyarrow
+import pandas as pd
 
 
 class Source(Protocol):
@@ -57,4 +58,6 @@ class Processor(Protocol):
 
     def discover_catalog(self) -> dict[str, tuple]: ...
 
-    def write_stream_to_cache(self, cache: Cache, stream: str) -> Generator[int, None, None]: ...
+    def generate_table_schema(self, stream: str) -> str: ...
+
+    def get_result_batches(self, stream: str) -> Generator[pd.DataFrame, None, None]: ...

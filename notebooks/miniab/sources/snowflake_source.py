@@ -1,13 +1,13 @@
 from __future__ import annotations
 from textwrap import dedent
 
+import pandas as pd
 import snowflake.connector as sc
 
 from typing import Generator, Optional, NoReturn
 
 from ..base import Processor
 from ..sources.base_source import BaseSource
-from ..caches.duckdb_cache import DuckdbCache
 
 
 class SnowflakeSource(BaseSource):
@@ -71,43 +71,37 @@ class SnowflakeProcessor:
             cursor = self.conn.cursor().execute(sql_query)
             assert cursor is not None
             (record_num,) = cursor.fetchone()
-            
+
             catalog[stream] = (record_num,)
 
         return catalog
 
-    def write_stream_to_cache(
-        self, cache: DuckdbCache, stream: str
-    ) -> Generator[int, None, None]:
+    def generate_table_schema(self, stream: str) -> str:
+        sql_query = dedent(
+            f"""
+            SELECT TOP(1)
+                *
+            FROM
+                "{self.config["database"]}"."{self.config["schema"]}"."{stream}";
+            """
+        )
+        cursor = self.conn.cursor().execute(sql_query)
+        assert cursor is not None
+        return self._generate_table_schema(stream, cursor)
+
+    def get_result_batches(self, stream: str) -> Generator[pd.DataFrame, None, None]:
         sql_query = dedent(
             f"""
             SELECT
                 *
             FROM
-                "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
+                "{self.config["database"]}"."{self.config["schema"]}"."{stream}";
             """
         )
         cursor = self.conn.cursor().execute(sql_query)
         assert cursor is not None
-
-        table_schema = self._generate_table_schema(stream, cursor)
-        cache.processor.sql(table_schema)
-
-        record_num = 0
         for batch in cursor.get_result_batches():
-            batch_df = batch.to_pandas()
-            sql_query = dedent(
-                f"""
-                INSERT INTO "{stream}"
-                SELECT
-                    *
-                FROM
-                    batch_df;
-                """
-            )
-            cache.processor.sql(sql_query)
-            record_num += batch_df.shape[0]
-            yield record_num
+            yield batch.to_pandas()
 
     def _generate_table_schema(self, stream: str, cursor: sc.SnowflakeCursor) -> str:
         column_names = [

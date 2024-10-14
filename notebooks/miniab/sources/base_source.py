@@ -21,7 +21,7 @@ class BaseSource:
         self.sync = sync
 
         self.selected_streams: list[str] = []
-        self.discovered_catalog: dict[str, tuple] = []
+        self.discovered_catalog: dict[str, tuple] = {}
 
         if self.sync:
             with self.get_processor() as processor:
@@ -119,12 +119,32 @@ class BaseSource:
 
             for stream in stream_to_be_synced:
                 total_record_num = self.discovered_catalog[stream][0]
-                print(f"  - {0:,} {stream}", end="\r")
-                for record_num in processor.write_stream_to_cache(cache, stream):
+
+                record_num = 0
+                progress = int(record_num * 100 / total_record_num)
+                print(f"  - {record_num:,} {stream} ({progress}%)", end="\r")
+
+                table_schema = processor.generate_table_schema(stream)
+                cache.get_sql_engine().sql(table_schema)
+
+                for batch_df in processor.get_result_batches(stream):
+                    sql_query = dedent(
+                        f"""
+                        INSERT INTO "{stream}"
+                        SELECT
+                            *
+                        FROM
+                            batch_df;
+                        """
+                    )
+                    cache.get_sql_engine().sql(sql_query)
+                    record_num += batch_df.shape[0]
+
                     progress = int(record_num * 100 / total_record_num)
                     print(f"  - {record_num:,} {stream} ({progress}%)", end="\r")
-                print(f"  - {total_record_num:,} {stream}                  ")
-                total_record_cached += total_record_num
+
+                print(f"  - {record_num:,} {stream}                  ")
+                total_record_cached += record_num
 
             return total_record_cached
 
@@ -132,6 +152,7 @@ class BaseSource:
         self, cache: DuckdbCache, existing_streams: list[str], stream: str
     ) -> bool:
         to_be_synced = True
+
         if stream in existing_streams:
             sql_query = dedent(
                 f"""
@@ -144,4 +165,5 @@ class BaseSource:
             (cached_record_num,) = cache.get_sql_engine().sql(sql_query).fetchone()
             record_num = self.discovered_catalog[stream][0]
             to_be_synced = record_num != cached_record_num
+
         return to_be_synced
