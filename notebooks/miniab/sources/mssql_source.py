@@ -1,17 +1,17 @@
 from __future__ import annotations
+from textwrap import dedent
 
 import pyodbc
 import pandas as pd
 
-from typing import Optional, NoReturn
-from datetime import datetime
+from typing import Optional, NoReturn, override
 
-from ..colorize import colorize
-from ..base import Cache, ReadResult
+from .base_source import BaseSource
+from ..base import Processor
 from ..caches.duckdb_cache import DuckdbCache
 
 
-class MsSqlSource:
+class MsSqlSource(BaseSource):
 
     def __init__(
         self,
@@ -19,182 +19,105 @@ class MsSqlSource:
         streams: Optional[str | list[str]] = None,
         sync: bool = True,
     ) -> NoReturn:
-        self.config = config
-        self.sync = sync
+        super().__init__(config, streams, sync)
 
-        self.selected_streams: list[str] = []
-        self.discovered_catalog: list[pyodbc.Row] = []
-
-        if self.sync:
-            self.discovered_catalog = self._discover(self)
-
-        if streams is not None:
-            self.select_streams(streams)
-
-    def select_all_streams(self) -> NoReturn:
-        self.selected_streams = self.get_available_streams()
-
-    def select_streams(self, streams: str | list[str]) -> NoReturn:
-        if streams == "*":
-            self.select_all_streams()
-            return
-
-        if isinstance(streams, str):
-            # If a single stream is provided, convert it to a one-item list
-            streams = [streams]
-
-        available_streams = self.get_available_streams()
-        for stream in streams:
-            if stream not in available_streams:
-                raise Exception(f"Stream not found: {stream}")
-        self.selected_streams = streams
-
-    def get_selected_streams(self) -> list[str]:
-        return self.selected_streams
-
-    def get_available_streams(self) -> list[str]:
-        return [stream[2] for stream in self.discovered_catalog]
-
-    def read(
-        self, cache: Optional[Cache], force_full_refresh: bool = False
-    ) -> ReadResult:
-        cache = cache or DuckdbCache()
-
-        total_record_cached = 0
-
-        if self.sync:
-            if not self.selected_streams:
-                raise Exception("No streams selected")
-
-            time_start = datetime.now()
-            print(
-                colorize(
-                    f"Sync Progress: {str(self)} -> {str(cache)}",
-                    color="yellow",
-                    bold=True,
-                )
-            )
-            print(
-                colorize(
-                    f"Started reading from source at {time_start.strftime('%H:%M:%S')}",
-                    bold=True,
-                )
-            )
-
-            print(f" * Received records for {len(self.streams)} streams:")
-            total_record_cached = self._read_to_cache(cache, force_full_refresh)
-            print(f" * Cached {total_record_cached:,} records.")
-
-            time_end = datetime.now()
-            print(
-                f" * Finished reading from source at {time_end.strftime('%H:%M:%S')}."
-            )
-            print(
-                colorize(
-                    f"Sync completed at {time_end.strftime('%H:%M:%S')}. Total time elapsed: {time_end - time_start}",
-                    bold=True,
-                )
-            )
-
-        return cache.get_result(cache, total_record_cached)
+    @override
+    def get_processor(self) -> Processor:
+        return MsSqlProcessor(self.config)
 
     def __str__(self) -> str:
         return "MsSqlSource"
 
-    def _connect(self) -> pyodbc.Connection:
+
+class MsSqlProcessor:
+
+    def __init__(self, config: dict[str, str]):
         sql_server_drivers = list(filter(lambda x: "SQL Server" in x, pyodbc.drivers()))
         conn_str = (
             f"DRIVER={{{sql_server_drivers[0]}}};"
-            f'SERVER=tcp:{self.config["host"]};PORT={self.config["port"]};'
-            f'DATABASE={self.config["database"]};'
-            f'UID={self.config["username"]};'
-            f'PWD={self.config["password"]}'
+            f'SERVER=tcp:{config["host"]};PORT={config["port"]};'
+            f'DATABASE={config["database"]};'
+            f'UID={config["username"]};'
+            f'PWD={config["password"]}'
         )
-        return pyodbc.connect(conn_str)
+        self.conn = pyodbc.connect(conn_str)
 
-    def _discover(self) -> list[pyodbc.Row]:
-        with self._connect() as conn:
-            with conn.cursor() as cursor:
-                show_tables = f"""
-                    SELECT
-                        *
-                    FROM
-                        INFORMATION_SCHEMA.TABLES
-                    WHERE
-                        TABLE_SCHEMA='{self.config['schema']}' AND TABLE_TYPE='BASE TABLE';
+    def close(self) -> NoReturn:
+        self.conn.close()
+
+    def discover(self) -> list[tuple[str]]:
+        with self.conn.cursor() as cursor:
+            show_tables = dedent(
+                f"""
+                SELECT
+                    *
+                FROM
+                    INFORMATION_SCHEMA.TABLES
+                WHERE
+                    TABLE_SCHEMA='{self.config['schema']}' AND TABLE_TYPE='BASE TABLE';
                 """
-                return cursor.execute(show_tables).fetchall()
+            )
+            return [(x[2]) for x in cursor.execute(show_tables).fetchall()]
 
-    def _read_to_cache(self, cache: DuckdbCache, force_full_refresh: bool):
-        total_record_cached = 0
+    def check_stream_to_be_synced(
+        self, cache: DuckdbCache, existing_streams: list[str], stream: str
+    ) -> bool:
+        with self.conn.cursor() as cursor:
+            to_be_synced = True
 
-        with self._connect() as conn:
-
-            existing_streams: list[str] = []
-            if not force_full_refresh:
-                existing_streams = [
-                    table[0] for table in cache.processor.sql("SHOW TABLES;").fetchall()
-                ]
-
-            def check_if_stream_to_be_cached(stream: str):
-                return self._check_if_stream_to_be_cached(
-                    cache, conn, existing_streams, stream
-                )
-            stream_to_be_cached = list(filter(check_if_stream_to_be_cached, self.selected_streams))
-
-            for stream in stream_to_be_cached:
-                with conn.cursor() as cursor:
-                    table_schema = self._generate_table_schema(stream, cursor)
-                    cache.processor.sql(table_schema)
-
-                    sql_query = f"""
-                        SELECT
-                            *
-                        FROM
-                            "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
-                    """
-                    cursor.execute(sql_query)
-
-                    record_num = 0
-                    for batch in self._get_result_batches(cursor):
-                        print(
-                            f"  - {record_num:,} {stream} (loading)",
-                            end="\r",
-                        )
-                        batch_df = self._to_pandas(cursor, batch)
-                        sql_query = f'INSERT INTO "{stream}" SELECT * FROM batch_df;'
-                        cache.processor.sql(sql_query)
-                        record_num += batch_df.shape[0]
-                    print(f"  - {record_num:,} {stream}                  ")
-
-                    total_record_cached += record_num
-
-        return total_record_cached
-
-    def _check_if_stream_to_be_cached(
-        self,
-        cache: DuckdbCache,
-        conn: pyodbc.Connection,
-        existing_streams: list[str],
-        stream: str,
-    ):
-        to_be_synced = True
-
-        with conn.cursor() as cursor:
-            sql_query = f"""
+            sql_query = dedent(
+                f"""
                 SELECT
                     COUNT(*)
                 FROM
                     "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
-            """
+                """
+            )
             record_num = cursor.execute(sql_query).fetchval()
 
-        if stream in existing_streams:
-            sql_query = f'SELECT COUNT(*) FROM "{stream}"'
-            (cached_record_num,) = cache.processor.sql(sql_query).fetchone()
-            to_be_synced = record_num != cached_record_num
+            if stream in existing_streams:
+                sql_query = f'SELECT COUNT(*) FROM "{stream}"'
+                (cached_record_num,) = cache.get_sql_engine().sql(sql_query).fetchone()
+                to_be_synced = record_num != cached_record_num
 
-        return to_be_synced
+            return to_be_synced
+
+    def write_stream_to_cache(self, cache: DuckdbCache, stream: str) -> int:
+        with self.conn.cursor() as cursor:
+            table_schema = self._generate_table_schema(stream, cursor)
+            cache.get_sql_engine().sql(table_schema)
+
+            sql_query = dedent(
+                f"""
+                SELECT
+                    *
+                FROM
+                    "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
+                """
+            )
+            cursor.execute(sql_query)
+
+            record_num = 0
+            for batch in self._get_result_batches(cursor):
+                print(
+                    f"  - {record_num:,} {stream} (loading)",
+                    end="\r",
+                )
+                batch_df = self._to_pandas(cursor, batch)
+                sql_query = dedent(
+                    f"""
+                    INSERT INTO "{stream}"
+                    SELECT
+                        *
+                    FROM
+                        batch_df;
+                    """
+                )
+                cache.get_sql_engine().sql(sql_query)
+                record_num += batch_df.shape[0]
+            print(f"  - {record_num:,} {stream}                  ")
+
+            return record_num
 
     def _get_result_batches(self, data: pyodbc.Cursor, max_chunk_size: int = 100_000):
         while True:
