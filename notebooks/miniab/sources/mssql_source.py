@@ -4,7 +4,7 @@ from textwrap import dedent
 import pyodbc
 import pandas as pd
 
-from typing import Optional, NoReturn, override
+from typing import Generator, Optional, NoReturn
 
 from .base_source import BaseSource
 from ..base import Processor
@@ -21,7 +21,6 @@ class MsSqlSource(BaseSource):
     ) -> NoReturn:
         super().__init__(config, streams, sync)
 
-    @override
     def get_processor(self) -> Processor:
         return MsSqlProcessor(self.config)
 
@@ -32,20 +31,29 @@ class MsSqlSource(BaseSource):
 class MsSqlProcessor:
 
     def __init__(self, config: dict[str, str]):
-        sql_server_drivers = list(filter(lambda x: "SQL Server" in x, pyodbc.drivers()))
-        conn_str = (
-            f"DRIVER={{{sql_server_drivers[0]}}};"
-            f'SERVER=tcp:{config["host"]};PORT={config["port"]};'
-            f'DATABASE={config["database"]};'
-            f'UID={config["username"]};'
-            f'PWD={config["password"]}'
+        self.config = config
+        self.conn = pyodbc.connect(
+            (
+                f"DRIVER={{{self._get_driver()}}};"
+                f'SERVER=tcp:{self.config["host"]};PORT={self.config["port"]};'
+                f'DATABASE={self.config["database"]};'
+                f'UID={self.config["username"]};'
+                f'PWD={self.config["password"]}'
+            )
         )
-        self.conn = pyodbc.connect(conn_str)
+
+    def __enter__(self) -> Processor:
+        return self
+
+    def __exit__(self, type, value, traceback) -> NoReturn:
+        self.close()
 
     def close(self) -> NoReturn:
         self.conn.close()
 
-    def discover(self) -> list[tuple[str]]:
+    def discover_catalog(self) -> dict[str, tuple]:
+        catalog = {}
+
         with self.conn.cursor() as cursor:
             show_tables = dedent(
                 f"""
@@ -54,35 +62,31 @@ class MsSqlProcessor:
                 FROM
                     INFORMATION_SCHEMA.TABLES
                 WHERE
-                    TABLE_SCHEMA='{self.config['schema']}' AND TABLE_TYPE='BASE TABLE';
+                    TABLE_CATALOG='{self.config['database']}' AND TABLE_SCHEMA='{self.config['schema']}' AND TABLE_TYPE='BASE TABLE';
                 """
             )
-            return [(x[2]) for x in cursor.execute(show_tables).fetchall()]
+            rows = cursor.execute(show_tables).fetchall()
 
-    def check_stream_to_be_synced(
-        self, cache: DuckdbCache, existing_streams: list[str], stream: str
-    ) -> bool:
-        with self.conn.cursor() as cursor:
-            to_be_synced = True
+            for row in rows:
+                stream = row[2]
 
-            sql_query = dedent(
-                f"""
-                SELECT
-                    COUNT(*)
-                FROM
-                    "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
-                """
-            )
-            record_num = cursor.execute(sql_query).fetchval()
+                sql_query = dedent(
+                    f"""
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
+                    """
+                )
+                record_num = cursor.execute(sql_query).fetchval()
 
-            if stream in existing_streams:
-                sql_query = f'SELECT COUNT(*) FROM "{stream}"'
-                (cached_record_num,) = cache.get_sql_engine().sql(sql_query).fetchone()
-                to_be_synced = record_num != cached_record_num
+                catalog[stream] = (record_num,)
 
-            return to_be_synced
+        return catalog
 
-    def write_stream_to_cache(self, cache: DuckdbCache, stream: str) -> int:
+    def write_stream_to_cache(
+        self, cache: DuckdbCache, stream: str
+    ) -> Generator[int, None, None]:
         with self.conn.cursor() as cursor:
             table_schema = self._generate_table_schema(stream, cursor)
             cache.get_sql_engine().sql(table_schema)
@@ -99,10 +103,6 @@ class MsSqlProcessor:
 
             record_num = 0
             for batch in self._get_result_batches(cursor):
-                print(
-                    f"  - {record_num:,} {stream} (loading)",
-                    end="\r",
-                )
                 batch_df = self._to_pandas(cursor, batch)
                 sql_query = dedent(
                     f"""
@@ -115,9 +115,10 @@ class MsSqlProcessor:
                 )
                 cache.get_sql_engine().sql(sql_query)
                 record_num += batch_df.shape[0]
-            print(f"  - {record_num:,} {stream}                  ")
+                yield record_num
 
-            return record_num
+    def _get_driver(self) -> str:
+        return next(filter(lambda x: "SQL Server" in x, pyodbc.drivers()))
 
     def _get_result_batches(self, data: pyodbc.Cursor, max_chunk_size: int = 100_000):
         while True:

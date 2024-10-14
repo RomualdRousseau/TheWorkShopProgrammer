@@ -9,7 +9,7 @@ from ..base import Cache, ReadResult
 
 class DuckdbCache:
 
-    def __init__(self, name: str):
+    def __init__(self, name: str = "default_cache"):
         path = f".cache/{name}"
         if not os.path.exists(path):
             os.makedirs(path)

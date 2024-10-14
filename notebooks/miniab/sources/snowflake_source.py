@@ -3,7 +3,7 @@ from textwrap import dedent
 
 import snowflake.connector as sc
 
-from typing import Optional, NoReturn, override
+from typing import Generator, Optional, NoReturn
 
 from ..base import Processor
 from ..sources.base_source import BaseSource
@@ -20,7 +20,6 @@ class SnowflakeSource(BaseSource):
     ) -> NoReturn:
         super().__init__(config, streams, sync)
 
-    @override
     def get_processor(self) -> Processor:
         return SnowflakeProcessor(self.config)
 
@@ -31,49 +30,55 @@ class SnowflakeSource(BaseSource):
 class SnowflakeProcessor:
 
     def __init__(self, config: dict[str, str]):
+        self.config = config
         self.conn = sc.connect(
-            user=config["username"],
-            password=config["password"],
-            account=config["account"],
-            warehouse=config["warehouse"],
-            database=config["database"],
-            schema=config["schema"],
-            role=config["role"],
+            user=self.config["username"],
+            password=self.config["password"],
+            account=self.config["account"],
+            warehouse=self.config["warehouse"],
+            database=self.config["database"],
+            schema=self.config["schema"],
+            role=self.config["role"],
         )
+
+    def __enter__(self) -> Processor:
+        return self
+
+    def __exit__(self, type, value, traceback) -> NoReturn:
+        self.close()
 
     def close(self) -> NoReturn:
         self.conn.close()
 
-    def discover(self) -> list[tuple[str]]:
+    def discover_catalog(self) -> dict[str, tuple]:
+        catalog = {}
+
         show_tables = "SHOW TERSE TABLES;"
-        cursor = self.conn.cursor().execute(show_tables)
-        assert cursor is not None
-        return [(row[1]) for row in cursor]
+        rows = self.conn.cursor().execute(show_tables)
+        assert rows is not None
 
-    def check_stream_to_be_synced(
-        self, cache: DuckdbCache, existing_streams: list[str], stream: str
-    ) -> bool:
-        to_be_synced = True
+        for row in rows:
+            stream = row[1]
 
-        sql_query = dedent(
-            f"""
-            SELECT
-                COUNT(*)
-            FROM
-                "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
-            """)
-        cursor = self.conn.cursor().execute(sql_query)
-        assert cursor is not None
-        (record_num,) = cursor.fetchone()
+            sql_query = dedent(
+                f"""
+                SELECT
+                    COUNT(*)
+                FROM
+                    "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
+                """
+            )
+            cursor = self.conn.cursor().execute(sql_query)
+            assert cursor is not None
+            (record_num,) = cursor.fetchone()
+            
+            catalog[stream] = (record_num,)
 
-        if stream in existing_streams:
-            sql_query = f'SELECT COUNT(*) FROM "{stream}"'
-            (cached_record_num,) = cache.processor.sql(sql_query).fetchone()
-            to_be_synced = record_num != cached_record_num
+        return catalog
 
-        return to_be_synced
-
-    def write_stream_to_cache(self, cache: DuckdbCache, stream: str) -> int:
+    def write_stream_to_cache(
+        self, cache: DuckdbCache, stream: str
+    ) -> Generator[int, None, None]:
         sql_query = dedent(
             f"""
             SELECT
@@ -90,10 +95,6 @@ class SnowflakeProcessor:
 
         record_num = 0
         for batch in cursor.get_result_batches():
-            print(
-                f"  - {record_num:,} {stream} (loading)",
-                end="\r",
-            )
             batch_df = batch.to_pandas()
             sql_query = dedent(
                 f"""
@@ -106,9 +107,7 @@ class SnowflakeProcessor:
             )
             cache.processor.sql(sql_query)
             record_num += batch_df.shape[0]
-        print(f"  - {record_num:,} {stream}                  ")
-
-        return record_num
+            yield record_num
 
     def _generate_table_schema(self, stream: str, cursor: sc.SnowflakeCursor) -> str:
         column_names = [

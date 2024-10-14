@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Protocol, NoReturn, Any
+from typing import Generator, Optional, Protocol, NoReturn, Any
 
 import pyarrow
 
@@ -49,16 +49,12 @@ class ReadResult(Protocol):
 
 class Processor(Protocol):
 
-    def __enter__(self) -> Processor:
-        return self
+    def __enter__(self) -> Processor: ...
 
-    def __exit__(self, type, value, traceback) -> NoReturn:
-        self.close()
+    def __exit__(self, type, value, traceback) -> NoReturn: ...
 
     def close(self) -> NoReturn: ...
 
-    def discover(self) -> list[tuple[str]]: ...
+    def discover_catalog(self) -> dict[str, tuple]: ...
 
-    def check_stream_to_be_synced(self, cache: Cache, existing_streams: list[str], stream: str) -> bool: ...
-
-    def write_stream_to_cache(self, cache: Cache, stream: str) -> int: ...
+    def write_stream_to_cache(self, cache: Cache, stream: str) -> Generator[int, None, None]: ...

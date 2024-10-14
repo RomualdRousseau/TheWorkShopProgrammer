@@ -11,7 +11,7 @@ ALL_CONNECTORS: dict[str, Callable[[tuple], Source]] = {
 
 
 def get_available_connectors() -> list[str]:
-    return ALL_CONNECTORS.keys()
+    return [key for key in ALL_CONNECTORS.keys()]
 
 
 def get_source(
