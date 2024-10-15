@@ -1,10 +1,13 @@
 from __future__ import annotations
-from typing import Optional, Protocol, NoReturn, Any
+from typing import Generator, Optional, Protocol, NoReturn, Any
 
 import pyarrow
+import pandas as pd
 
 
 class Source(Protocol):
+
+    def get_processor(self) -> Processor: ...
 
     def select_all_streams(self) -> NoReturn: ...
 
@@ -15,14 +18,13 @@ class Source(Protocol):
     def get_available_streams(self) -> list[str]: ...
 
     def read(
-        self, cache: Optional[Cache], force_full_refresh: bool = False
+        self, cache: Optional[Cache] = None, force_full_refresh: bool = False
     ) -> ReadResult: ...
 
 
 class Cache(Protocol):
 
-    @property
-    def processor(self) -> Any: ...
+    def get_sql_engine(self) -> Any: ...
 
     def get_result(self, total_record_cached: int) -> ReadResult: ...
 
@@ -44,3 +46,18 @@ class ReadResult(Protocol):
     def to_arrow(
         self, stream_name: str, max_chunk_size: int = 100000
     ) -> pyarrow.lib.Table: ...
+
+
+class Processor(Protocol):
+
+    def __enter__(self) -> Processor: ...
+
+    def __exit__(self, type, value, traceback) -> NoReturn: ...
+
+    def close(self) -> NoReturn: ...
+
+    def discover_catalog(self) -> dict[str, tuple]: ...
+
+    def generate_table_schema(self, stream: str) -> str: ...
+
+    def get_result_batches(self, stream: str) -> Generator[pd.DataFrame, None, None]: ...
