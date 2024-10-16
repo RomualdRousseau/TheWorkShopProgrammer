@@ -28,3 +28,7 @@ initialize:
 # update poetry with
 update:
     poetry update
+
+lint:
+    ruff format
+    ruff check --fix

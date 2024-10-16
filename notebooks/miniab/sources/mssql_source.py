@@ -1,17 +1,16 @@
 from __future__ import annotations
+
 from textwrap import dedent
+from typing import Generator, NoReturn, Optional
 
-import pyodbc
 import pandas as pd
+import pyodbc
 
-from typing import Generator, Optional, NoReturn
-
-from .base_source import BaseSource
 from ..base import Processor
+from .base_source import BaseSource
 
 
 class MsSqlSource(BaseSource):
-
     def __init__(
         self,
         config: dict[str, str],
@@ -28,9 +27,9 @@ class MsSqlSource(BaseSource):
 
 
 class MsSqlProcessor:
-
-    def __init__(self, config: dict[str, str]):
+    def __init__(self, config: dict[str, str], max_batch_size=100_000):
         self.config = config
+        self.max_batch_size = max_batch_size
         self.conn = pyodbc.connect(
             (
                 f"DRIVER={{{self._get_driver()}}};"
@@ -41,75 +40,72 @@ class MsSqlProcessor:
             )
         )
 
-    def __enter__(self) -> Processor:
-        return self
-
-    def __exit__(self, type, value, traceback) -> NoReturn:
-        self.close()
-
     def close(self) -> NoReturn:
         self.conn.close()
 
     def discover_catalog(self) -> dict[str, tuple]:
-        catalog = {}
-
         with self.conn.cursor() as cursor:
-            show_tables = dedent(
-                f"""
-                SELECT
-                    *
-                FROM
-                    INFORMATION_SCHEMA.TABLES
-                WHERE
-                    TABLE_CATALOG='{self.config['database']}' AND TABLE_SCHEMA='{self.config['schema']}' AND TABLE_TYPE='BASE TABLE';
-                """
-            )
-            rows = cursor.execute(show_tables).fetchall()
 
-            for row in rows:
-                stream = row[2]
+            def get_tables():
+                show_tables = dedent(
+                    f"""
+                    SELECT
+                        *
+                    FROM
+                        INFORMATION_SCHEMA.TABLES
+                    WHERE
+                        TABLE_CATALOG='{self.config['database']}'
+                        AND TABLE_SCHEMA='{self.config['schema']}'
+                        AND TABLE_TYPE='BASE TABLE';
+                    """
+                )
+                return cursor.execute(show_tables).fetchall()
 
+            def get_table_count(stream):
                 sql_query = dedent(
                     f"""
                     SELECT
                         COUNT(*)
                     FROM
-                        "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
+                        "{self.config["database"]}"."{self.config["schema"]}"."{stream}";
                     """
                 )
-                record_num = cursor.execute(sql_query).fetchval()
+                return cursor.execute(sql_query).fetchval()
 
-                catalog[stream] = (record_num,)
+            def zip_table_count(table):
+                table_name = table[2]
+                return (table_name, get_table_count(table_name))
 
-        return catalog
+            return {stream: (count,) for stream, count in map(zip_table_count, get_tables())}
 
     def generate_table_schema(self, stream: str) -> str:
         with self.conn.cursor() as cursor:
-            return self._generate_table_schema(stream, cursor)
+            column_names = [f'"{column[3]}" {self._to_sql_type(column)}' for column in cursor.columns(table=stream)]
+            create_table = f'CREATE OR REPLACE TABLE "{stream}" ('
+            create_table += ",".join(column_names)
+            create_table += ");"
+            return create_table
 
-    def get_result_batches(self, stream: str) -> Generator[pd.DataFrame, None, None]:
+    def get_result_batches(self, stream: str) -> Generator[pd.DataFrame]:
         with self.conn.cursor() as cursor:
             sql_query = dedent(
                 f"""
                 SELECT
                     *
                 FROM
-                    "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
+                    "{self.config["database"]}"."{self.config["schema"]}"."{stream}";
                 """
             )
-            cursor.execute(sql_query)
-            for batch in self._get_result_batches(cursor):
+            cursor = cursor.execute(sql_query)
+
+            while True:
+                batch = cursor.fetchmany(self.max_batch_size)
+                if not batch:
+                    break
                 yield self._to_pandas(cursor, batch)
 
     def _get_driver(self) -> str:
         return next(filter(lambda x: "SQL Server" in x, pyodbc.drivers()))
-
-    def _get_result_batches(self, data: pyodbc.Cursor, max_chunk_size: int = 100_000):
-        while True:
-            batch = data.fetchmany(max_chunk_size)
-            if not batch:
-                break
-            yield batch
 
     def _to_pandas(self, cursor: pyodbc.Cursor, data: list[pyodbc.Row]) -> pd.DataFrame:
         return pd.DataFrame.from_records(
@@ -119,16 +115,6 @@ class MsSqlProcessor:
             lambda x: str(x) if not isinstance(x, bool) else x,
             na_action="ignore",
         )
-
-    def _generate_table_schema(self, stream: str, cursor: pyodbc.Cursor) -> str:
-        column_names = [
-            f'"{column[3]}" {self._to_sql_type(column)}'
-            for column in cursor.columns(table=stream)
-        ]
-        create_table = f'CREATE OR REPLACE TABLE "{stream}" ('
-        create_table += ",".join(column_names)
-        create_table += ")"
-        return create_table
 
     def _to_sql_type(self, column: list) -> str:
         types = column[5].split()
@@ -145,13 +131,6 @@ class MsSqlProcessor:
             case "bit":
                 return "BIT"
 
-            case "numeric":
-                return f"DECIMAL({column[6]},{column[8]})"
-            case "decimal":
-                return f"DECIMAL({column[6]},{column[8]})"
-            case "money":
-                return f"DECIMAL({column[6]},{column[8]})"
-
             case "float":
                 return "FLOAT"
             case "double":
@@ -159,9 +138,18 @@ class MsSqlProcessor:
             case "real":
                 return "REAL"
 
+            case "numeric":
+                return f"DECIMAL({column[6]},{column[8]})"
+            case "decimal":
+                return f"DECIMAL({column[6]},{column[8]})"
+            case "money":
+                return f"DECIMAL({column[6]},{column[8]})"
+
             case "char":
                 return f"VARCHAR({column[6]})"
             case "varchar":
+                return f"VARCHAR({column[6]})"
+            case "text":
                 return f"VARCHAR({column[6]})"
             case "nchar":
                 return f"VARCHAR({column[6]})"
