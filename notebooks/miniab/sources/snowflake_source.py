@@ -1,17 +1,16 @@
 from __future__ import annotations
+
 from textwrap import dedent
+from typing import Generator, NoReturn, Optional
 
 import pandas as pd
 import snowflake.connector as sc
 
-from typing import Generator, Optional, NoReturn
-
-from ..base import Processor
-from ..sources.base_source import BaseSource
+from notebooks.miniab.base import Processor
+from notebooks.miniab.sources.base_source import BaseSource
 
 
 class SnowflakeSource(BaseSource):
-
     def __init__(
         self,
         config: dict[str, str],
@@ -28,7 +27,6 @@ class SnowflakeSource(BaseSource):
 
 
 class SnowflakeProcessor:
-
     def __init__(self, config: dict[str, str]):
         self.config = config
         self.conn = sc.connect(
@@ -41,40 +39,38 @@ class SnowflakeProcessor:
             role=self.config["role"],
         )
 
-    def __enter__(self) -> Processor:
-        return self
-
-    def __exit__(self, type, value, traceback) -> NoReturn:
-        self.close()
-
     def close(self) -> NoReturn:
         self.conn.close()
 
     def discover_catalog(self) -> dict[str, tuple]:
-        catalog = {}
+        def get_tables():
+            show_tables = dedent(
+                """
+                SHOW TERSE TABLES;
+                """
+            )
+            cursor = self.conn.cursor().execute(show_tables)
+            assert cursor is not None
+            return cursor.fetchall()
 
-        show_tables = "SHOW TERSE TABLES;"
-        rows = self.conn.cursor().execute(show_tables)
-        assert rows is not None
-
-        for row in rows:
-            stream = row[1]
-
+        def get_table_count(stream):
             sql_query = dedent(
                 f"""
                 SELECT
                     COUNT(*)
                 FROM
-                    "{self.config["database"]}"."{self.config["schema"]}"."{stream}"
+                    "{self.config["database"]}"."{self.config["schema"]}"."{stream}";
                 """
             )
             cursor = self.conn.cursor().execute(sql_query)
             assert cursor is not None
-            (record_num,) = cursor.fetchone()
+            return cursor.fetchone()[0]
 
-            catalog[stream] = (record_num,)
+        def zip_table_count(table):
+            table_name = table[1]
+            return (table_name, get_table_count(table_name))
 
-        return catalog
+        return {stream: (count,) for stream, count in map(zip_table_count, get_tables())}
 
     def generate_table_schema(self, stream: str) -> str:
         sql_query = dedent(
@@ -87,9 +83,14 @@ class SnowflakeProcessor:
         )
         cursor = self.conn.cursor().execute(sql_query)
         assert cursor is not None
-        return self._generate_table_schema(stream, cursor)
 
-    def get_result_batches(self, stream: str) -> Generator[pd.DataFrame, None, None]:
+        column_names = [f"{column.name} {self._to_sql_type(column)}" for column in cursor.description]
+        create_table = f'CREATE OR REPLACE TABLE "{stream}" ('
+        create_table += ",".join(column_names)
+        create_table += ");"
+        return create_table
+
+    def get_result_batches(self, stream: str) -> Generator[pd.DataFrame]:
         sql_query = dedent(
             f"""
             SELECT
@@ -100,18 +101,9 @@ class SnowflakeProcessor:
         )
         cursor = self.conn.cursor().execute(sql_query)
         assert cursor is not None
+
         for batch in cursor.get_result_batches():
             yield batch.to_pandas()
-
-    def _generate_table_schema(self, stream: str, cursor: sc.SnowflakeCursor) -> str:
-        column_names = [
-            f"{column.name} {self._to_sql_type(column)}"
-            for column in cursor.description
-        ]
-        create_table = f"CREATE OR REPLACE TABLE {stream} ("
-        create_table += ",".join(column_names)
-        create_table += ")"
-        return create_table
 
     def _to_sql_type(self, column: sc.ResultMetadata) -> str:
         match column.type_code:
@@ -129,4 +121,4 @@ class SnowflakeProcessor:
             case 4:
                 return "TIMESTAMP"
             case _:
-                raise Exception("Invalid or not supported type")
+                raise Exception("Invalid or not supported type: " + str(column))

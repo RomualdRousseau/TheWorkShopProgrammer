@@ -1,8 +1,9 @@
 from typing import Callable, Optional
-from .base import Source
-from .caches.duckdb_cache import DuckdbCache
-from .sources.snowflake_source import SnowflakeSource
-from .sources.mssql_source import MsSqlSource
+
+from notebooks.miniab.base import Source
+from notebooks.miniab.caches.duckdb_cache import DuckdbCache
+from notebooks.miniab.sources.mssql_source import MsSqlSource
+from notebooks.miniab.sources.snowflake_source import SnowflakeSource
 
 ALL_CONNECTORS: dict[str, Callable[[tuple], Source]] = {
     "source-snowflake": lambda args: SnowflakeSource(*args),
@@ -11,7 +12,7 @@ ALL_CONNECTORS: dict[str, Callable[[tuple], Source]] = {
 
 
 def get_available_connectors() -> list[str]:
-    return [key for key in ALL_CONNECTORS.keys()]
+    return list(ALL_CONNECTORS)
 
 
 def get_source(

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from textwrap import dedent
-from typing import Optional, NoReturn
+from contextlib import contextmanager
 from datetime import datetime
+from textwrap import dedent
+from typing import Generator, NoReturn, Optional
 
-from ..colorize import colorize
-from ..base import Cache, Processor, ReadResult
-from ..caches.duckdb_cache import DuckdbCache
+from notebooks.miniab.base import Cache, Processor, ReadResult
+from notebooks.miniab.caches.duckdb_cache import DuckdbCache
+from notebooks.miniab.colorize import colorize
 
 
 class BaseSource:
-
     def __init__(
         self,
         config: dict[str, str],
@@ -83,9 +83,22 @@ class BaseSource:
                 )
             )
 
-            print(f" * Received records for {len(self.selected_streams)} streams:")
-            total_record_cached = self._read_to_cache(cache, force_full_refresh)
-            print(f" * Cached {total_record_cached:,} records.")
+            existing_streams: list[str] = []
+            if not force_full_refresh:
+                existing_streams = [
+                    table[0] for table in cache.fetchall_sql("SHOW TABLES;")
+                ]
+
+            stream_to_be_synced = [
+                stream
+                for stream in self.selected_streams
+                if self._check_stream_to_be_synced(cache, existing_streams, stream)
+            ]
+
+            if len(stream_to_be_synced) > 0:
+                print(f" * Received records for {len(stream_to_be_synced)} streams:")
+                total_record_cached = self._read_to_cache(cache, stream_to_be_synced)
+                print(f" * Cached {total_record_cached:,} records.")
 
             time_end = datetime.now()
             print(
@@ -98,62 +111,12 @@ class BaseSource:
                 )
             )
 
-        return cache.get_result(total_record_cached)
-
-    def _read_to_cache(self, cache: DuckdbCache, force_full_refresh: bool):
-        with self.get_processor() as processor:
-            total_record_cached = 0
-
-            existing_streams: list[str] = []
-            if not force_full_refresh:
-                existing_streams = [
-                    table[0]
-                    for table in cache.get_sql_engine().sql("SHOW TABLES;").fetchall()
-                ]
-
-            stream_to_be_synced = [
-                stream
-                for stream in self.selected_streams
-                if self._check_stream_to_be_synced(cache, existing_streams, stream)
-            ]
-
-            for stream in stream_to_be_synced:
-                total_record_num = self.discovered_catalog[stream][0]
-
-                record_num = 0
-                progress = int(record_num * 100 / total_record_num)
-                print(f"  - {record_num:,} {stream} ({progress}%)", end="\r")
-
-                table_schema = processor.generate_table_schema(stream)
-                cache.get_sql_engine().sql(table_schema)
-
-                for batch_df in processor.get_result_batches(stream):
-                    sql_query = dedent(
-                        f"""
-                        INSERT INTO "{stream}"
-                        SELECT
-                            *
-                        FROM
-                            batch_df;
-                        """
-                    )
-                    cache.get_sql_engine().sql(sql_query)
-                    record_num += batch_df.shape[0]
-
-                    progress = int(record_num * 100 / total_record_num)
-                    print(f"  - {record_num:,} {stream} ({progress}%)", end="\r")
-
-                print(f"  - {record_num:,} {stream}                  ")
-                total_record_cached += record_num
-
-            return total_record_cached
+        return cache.get_read_result(total_record_cached)
 
     def _check_stream_to_be_synced(
-        self, cache: DuckdbCache, existing_streams: list[str], stream: str
+        self, cache: Cache, existing_streams: list[str], stream: str
     ) -> bool:
-        to_be_synced = True
-
-        if stream in existing_streams:
+        def get_cached_count():
             sql_query = dedent(
                 f"""
                 SELECT
@@ -162,8 +125,62 @@ class BaseSource:
                     "{stream}";
                 """
             )
-            (cached_record_num,) = cache.get_sql_engine().sql(sql_query).fetchone()
-            record_num = self.discovered_catalog[stream][0]
-            to_be_synced = record_num != cached_record_num
+            (cached_count,) = cache.fetchone_sql(sql_query)
+            return cached_count
 
-        return to_be_synced
+        def compare_with_catalog(cached_count):
+            discovered_count = self.discovered_catalog[stream][0]
+            return discovered_count - cached_count
+
+        return (
+            stream not in existing_streams
+            or compare_with_catalog(get_cached_count()) != 0
+        )
+
+    def _read_to_cache(self, cache: Cache, streams: list[str]) -> int:
+        with self._autoclose_processor() as processor:
+
+            def read_one_to_cache(stream, total_record_num):
+                record_num = 0
+
+                progress = record_num / total_record_num
+                print(f"  - {record_num:,} {stream} ({progress:.0%})", end="\r")
+
+                table_schema = processor.generate_table_schema(stream)
+                cache.execute_sql(table_schema)
+
+                for batch in processor.get_result_batches(stream):
+                    sql_query = dedent(
+                        f"""
+                        INSERT INTO "{stream}"
+                        SELECT
+                            *
+                        FROM
+                            batch;
+                        """
+                    )
+                    cache.execute_sql(sql_query)
+                    record_num += batch.shape[0]
+
+                    progress = record_num / total_record_num
+                    print(f"  - {record_num:,} {stream} ({progress:.0%})", end="\r")
+
+                assert record_num == total_record_num
+                print(f"  - {record_num:,} {stream} {' '*10}")
+                return record_num
+
+            total_record_cached = 0
+            for stream in streams:
+                total_record_num = self.discovered_catalog[stream][0]
+                total_record_cached += (
+                    read_one_to_cache(stream, total_record_num)
+                    if total_record_num > 0
+                    else 0
+                )
+            return total_record_cached
+
+    @contextmanager
+    def _autoclose_processor(self) -> Generator[Processor]:
+        processor = self.get_processor()
+        yield processor
+        processor.close()
