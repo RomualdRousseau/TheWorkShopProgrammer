@@ -6,8 +6,8 @@ from typing import Generator, NoReturn, Optional
 import pandas as pd
 import snowflake.connector as sc
 
-from notebooks.miniab.base import Processor
-from notebooks.miniab.sources.base_source import BaseSource
+from ..base import Processor
+from .base_source import BaseSource
 
 
 class SnowflakeSource(BaseSource):

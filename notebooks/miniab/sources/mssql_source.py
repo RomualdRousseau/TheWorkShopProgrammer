@@ -6,8 +6,8 @@ from typing import Generator, NoReturn, Optional
 import pandas as pd
 import pyodbc
 
-from notebooks.miniab.base import Processor
-from notebooks.miniab.sources.base_source import BaseSource
+from ..base import Processor
+from .base_source import BaseSource
 
 
 class MsSqlSource(BaseSource):
@@ -67,7 +67,7 @@ class MsSqlProcessor:
                     SELECT
                         COUNT(*)
                     FROM
-                        "{self.config["database"]}"."{self.config["schema"]}"."{stream};"
+                        "{self.config["database"]}"."{self.config["schema"]}"."{stream}";
                     """
                 )
                 return cursor.execute(sql_query).fetchval()

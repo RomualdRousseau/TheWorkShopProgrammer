@@ -5,9 +5,11 @@ from datetime import datetime
 from textwrap import dedent
 from typing import Generator, NoReturn, Optional
 
-from notebooks.miniab.base import Cache, Processor, ReadResult
-from notebooks.miniab.caches.duckdb_cache import DuckdbCache
-from notebooks.miniab.colorize import colorize
+from sqlalchemy import Engine, MetaData, Table, inspect, text
+
+from ..base import Cache, Processor, ReadResult
+from ..caches import get_default_cache
+from ..colorize import colorize
 
 
 class BaseSource:
@@ -24,7 +26,7 @@ class BaseSource:
         self.discovered_catalog: dict[str, tuple] = {}
 
         if self.sync:
-            with self.get_processor() as processor:
+            with self._autoclose_processor() as processor:
                 self.discovered_catalog = processor.discover_catalog()
 
         if streams is not None:
@@ -60,7 +62,7 @@ class BaseSource:
     def read(
         self, cache: Optional[Cache] = None, force_full_refresh: bool = False
     ) -> ReadResult:
-        cache = cache or DuckdbCache()
+        cache = cache or get_default_cache()
 
         total_record_cached = 0
 
@@ -83,21 +85,19 @@ class BaseSource:
                 )
             )
 
-            existing_streams: list[str] = []
-            if not force_full_refresh:
-                existing_streams = [
-                    table[0] for table in cache.fetchall_sql("SHOW TABLES;")
-                ]
-
+            engine = cache.get_sql_engine()
+            existing_streams = inspect(engine).get_table_names()
             stream_to_be_synced = [
                 stream
                 for stream in self.selected_streams
-                if self._check_stream_to_be_synced(cache, existing_streams, stream)
+                if force_full_refresh
+                or stream not in existing_streams
+                or self._check_stream_to_be_synced(engine, stream)
             ]
 
             if len(stream_to_be_synced) > 0:
                 print(f" * Received records for {len(stream_to_be_synced)} streams:")
-                total_record_cached = self._read_to_cache(cache, stream_to_be_synced)
+                total_record_cached = self._read_to_cache(engine, stream_to_be_synced, existing_streams)
                 print(f" * Cached {total_record_cached:,} records.")
 
             time_end = datetime.now()
@@ -111,11 +111,11 @@ class BaseSource:
                 )
             )
 
+        cache.do_checkpoint()
+
         return cache.get_read_result(total_record_cached)
 
-    def _check_stream_to_be_synced(
-        self, cache: Cache, existing_streams: list[str], stream: str
-    ) -> bool:
+    def _check_stream_to_be_synced(self, engine: Engine, stream: str) -> bool:
         def get_cached_count():
             sql_query = dedent(
                 f"""
@@ -125,58 +125,48 @@ class BaseSource:
                     "{stream}";
                 """
             )
-            (cached_count,) = cache.fetchone_sql(sql_query)
-            return cached_count
+            with engine.connect() as conn:
+                return conn.execute(text(sql_query)).scalar()
 
         def compare_with_catalog(cached_count):
             discovered_count = self.discovered_catalog[stream][0]
             return discovered_count - cached_count
 
-        return (
-            stream not in existing_streams
-            or compare_with_catalog(get_cached_count()) != 0
-        )
+        return compare_with_catalog(get_cached_count()) != 0
 
-    def _read_to_cache(self, cache: Cache, streams: list[str]) -> int:
+    def _read_to_cache(self, engine: Engine, streams: list[str], existing_streams: list[str]) -> int:
         with self._autoclose_processor() as processor:
 
-            def read_one_to_cache(stream, total_record_num):
-                record_num = 0
+            def write_stream_to_new_table(stream, total_record_count):
+                record_count = 0
 
-                progress = record_num / total_record_num
-                print(f"  - {record_num:,} {stream} ({progress:.0%})", end="\r")
+                progress = record_count / total_record_count
+                print(f"  - {record_count:,} {stream} ({progress:.0%})", end="\r")
 
-                table_schema = processor.generate_table_schema(stream)
-                cache.execute_sql(table_schema)
+                if stream in existing_streams:
+                    Table(stream, MetaData()).drop(engine)
 
                 for batch in processor.get_result_batches(stream):
-                    sql_query = dedent(
-                        f"""
-                        INSERT INTO "{stream}"
-                        SELECT
-                            *
-                        FROM
-                            batch;
-                        """
+                    batch.to_sql(
+                        stream, engine, if_exists="append", index=False
                     )
-                    cache.execute_sql(sql_query)
-                    record_num += batch.shape[0]
+                    record_count += batch.shape[0]
+                    progress = record_count / total_record_count
+                    print(f"  - {record_count:,} {stream} ({progress:.0%})", end="\r")
 
-                    progress = record_num / total_record_num
-                    print(f"  - {record_num:,} {stream} ({progress:.0%})", end="\r")
-
-                assert record_num == total_record_num
-                print(f"  - {record_num:,} {stream} {' '*10}")
-                return record_num
+                assert record_count == total_record_count
+                print(f"  - {record_count:,} {stream} {' '*10}")
+                return record_count
 
             total_record_cached = 0
             for stream in streams:
-                total_record_num = self.discovered_catalog[stream][0]
+                total_record_count = self.discovered_catalog[stream][0]
                 total_record_cached += (
-                    read_one_to_cache(stream, total_record_num)
-                    if total_record_num > 0
+                    write_stream_to_new_table(stream, total_record_count)
+                    if total_record_count > 0
                     else 0
                 )
+
             return total_record_cached
 
     @contextmanager

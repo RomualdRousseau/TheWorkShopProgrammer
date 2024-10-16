@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 from typing import NoReturn
 
-import duckdb
-import pyarrow
+import pandas as pd
+import pyarrow as pa
+from sqlalchemy import Engine, create_engine, text
 
-from notebooks.miniab.base import Cache, ReadResult
+from ..base import Cache, ReadResult
 
 
 class DuckdbCache:
@@ -14,26 +15,29 @@ class DuckdbCache:
         path = f".cache/{name}"
         if not os.path.exists(path):
             os.makedirs(path)
-        self._sql_engine = duckdb.connect(f"{path}/{name}.duckdb")
+        self._sql_engine = create_engine(f"duckdb:///{path}/{name}.duckdb")
 
-    def get_sql_engine(self) -> duckdb.DuckDBPyConnection:
+    def get_sql_engine(self) -> Engine:
         return self._sql_engine
-
-    def execute_sql(self, stmt: str) -> NoReturn:
-        self._sql_engine.sql(stmt)
-
-    def fetchone_sql(self, stmt: str) -> tuple | None:
-        return self._sql_engine.sql(stmt).fetchone()
-
-    def fetchall_sql(self, stmt: str) -> list[tuple]:
-        return self._sql_engine.sql(stmt).fetchall()
 
     def get_read_result(self, total_record_cached: int) -> ReadResult:
         return DuckdbReadResult(self, total_record_cached)
 
-    def get_arrow_dataset(self, stream_name: str, max_chunk_size: int = 100_000) -> pyarrow.lib.Table:
-        sql_query = self._sql_engine.sql(f'SELECT * FROM "{stream_name}"')
-        return sql_query.to_arrow_table(max_chunk_size)
+    def get_arrow_dataset(self, stream_name: str, max_chunk_size: int = 100_000) -> pa.Table:
+        with self._sql_engine.connect() as conn:
+            arrow_chunks = []
+            sql_query = text(f"SELECT * FROM \"{stream_name}\"")
+            for chunk in pd.read_sql_query(sql_query, conn, chunksize=max_chunk_size):
+                arrow_chunk = pa.Table.from_pandas(chunk)
+                arrow_chunks.append(arrow_chunk)
+            return pa.concat_tables(arrow_chunks)
+
+    def execute_sql(self, stmt: str) -> NoReturn:
+        with self._sql_engine.connect() as conn:
+            conn.execute(text(stmt)).close()
+
+    def do_checkpoint(self) -> NoReturn:
+        self.execute_sql("CHECKPOINT;")
 
     def __str__(self) -> str:
         return "DuckdbCache"
@@ -52,8 +56,8 @@ class DuckdbReadResult:
     def cache(self) -> Cache:
         return self._cache
 
-    def get_sql_engine(self) -> duckdb.DuckDBPyConnection:
+    def get_sql_engine(self) -> Engine:
         return self._cache.get_sql_engine()
 
-    def to_arrow(self, stream_name: str, max_chunk_size: int = 100000) -> pyarrow.lib.Table:
+    def to_arrow(self, stream_name: str, max_chunk_size: int = 100_000) -> pa.Table:
         return self._cache.get_arrow_dataset(stream_name, max_chunk_size)
