@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "tutorials"
+name = "Tutorials"
 version = "0.1.0"
 description = ""
 authors = ["Romuald Rousseau <romuald.rousseau@servier.com>"]
@@ -7,20 +7,18 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-numpy = "^1.26"
-matplotlib = "^3.9.2"
-duckdb = "^1.1.1"
-pyodbc = "^5.1.0"
-snowflake-connector-python = "^3.12.2"
-airbyte = "^0.18.1"
-pip-system-certs = "^4.0"
-duckdb-engine = "^0.13.2"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.29.5"
-pixi = "^1.0.1"
+ruff = "^0.7.4"
 python-dotenv = "^1.0.1"
-ruff = "^0.6.9"
+pixi = "^1.0.1"
+pytest = "^8.2.1"
+coverage = "^7.5.3"
+pre-commit = "^3.7.1"
+mypy = "^1.10.0"
+snakeviz = "^2.2.0"
+validate-pyproject = "^0.18"
 
 [build-system]
 requires = ["poetry-core"]
@@ -41,9 +39,9 @@ select = [
     "D"   # pydocstyle
 ]
 ignore = [
-    "C901",  # too complex
-    "W191",  # indentation contains tabs
-    "D401",  # imperative mood
+    "C901",  # Too complex
+    "W191",  # Indentation contains tabs
+    "D401",  # Imperative mood
     "D100",  # Missing docstring in public module
     "D101",  # Missing docstring in public class
     "D102",  # Missing docstring in public method
@@ -51,7 +49,8 @@ ignore = [
     "D104",  # Missing docstring in public package
     "D105",  # Missing docstring in magic method
     "D106",  # Missing docstring in public nested class
-    "D107"   # Missing docstring in `__init__`
+    "D107",  # Missing docstring in `__init__`
+    "E731"   # Lambda-assignment
 ]
 
 [tool.ruff.lint.pydocstyle]

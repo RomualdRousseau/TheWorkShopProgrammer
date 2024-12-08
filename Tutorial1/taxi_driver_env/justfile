@@ -1,0 +1,49 @@
+set dotenv-load
+
+# Default recipe to help
+default: help
+
+# Print the available recipes
+help:
+    @just --justfile {{justfile()}} --list
+
+# Install all tutorial dependencies
+install:
+    poetry install --no-root
+
+# Update all tutorial dependencies
+update:
+    poetry update
+
+# Build package
+build:
+    rm -rf dist; poetry build
+
+# Execute the pre-commit hooks
+pre-commit:
+    poetry run pre-commit run -a
+
+# Run the tests
+test:
+    poetry run coverage run -m pytest -vv
+
+# Display the coverage report
+coverage: test
+    poetry run coverage report -m --fail-under=80
+
+# Run the tutorial
+run: pre-commit coverage
+    poetry run python -m taxi_driver_env
+
+# Run the tutorial without pre-commit and coverage
+quick-run:
+    poetry run python -m taxi_driver_env
+
+# Profile the tutorial
+profile: pre-commit coverage
+    poetry run python -m cProfile -o taxi_driver_env.prof -m taxi_driver_env
+    poetry run python -m snakeviz taxi_driver_env.prof
+
+# Bump version
+version: pre-commit coverage
+    poetry version patch

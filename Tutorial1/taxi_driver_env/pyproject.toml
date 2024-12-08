@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "taxi_driver_env"
+version = "0.1.34"
+description = "Taxi Driver Environment"
+authors = ["Romuald Rousseau <romuald.rousseau@servier.com>"]
+readme = "README.md"
+packages = [{ include = "taxi_driver_agent" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+raylib = "^5.0.0.2"
+numpy = "^2.0.0"
+gymnasium = "^0.29.1"
+tqdm = "^4.66.4"
+numba = "^0.60.0"
+scipy = "^1.14.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.coverage.run]
+omit = [
+    "tests/*",
+    "taxi_driver_env/utils/*",
+    "taxi_driver_env/render/*",
+    "taxi_driver_env/game/*",
+    "taxi_driver_env/math/linalg.py",
+]

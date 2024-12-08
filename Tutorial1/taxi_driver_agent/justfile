@@ -1,0 +1,41 @@
+set dotenv-load
+
+# Default recipe to help
+default: help
+
+# Print the available recipes
+help:
+    @just --justfile {{justfile()}} --list
+
+# Install all tutorial dependencies
+install:
+    poetry install --no-root
+
+# Update all tutorial dependencies
+update:
+    poetry update
+
+# Execute the pre-commit hooks
+pre-commit:
+    poetry run pre-commit run -a
+
+# Run the tutorial in training mode
+run-training: pre-commit
+    poetry run python -m taxi_driver_agent --mode=training --model-file=agent.model --duration=120
+
+# Run the tutorial in training mode
+run-validation: pre-commit
+    poetry run python -m taxi_driver_agent --mode=validation --model-file=agent.model --duration=120
+
+# Run the cli with the specified arguments.
+run-cli +args="--help":
+    poetry run python -m taxi_driver_agent {{args}}
+
+# Profile the tutorial
+profile: pre-commit
+    poetry run python -m cProfile -o taxi_driver_agent.prof -m taxi_driver_agent
+    poetry run python -m snakeviz taxi_driver_agent.prof
+
+# Bump version
+version: pre-commit
+    poetry version patch

@@ -1,0 +1,33 @@
+set dotenv-load
+
+#
+# VARIABLES
+#
+
+#
+# EXPORTS
+#
+
+export ROOT_DIR := `pwd`
+
+#
+# HELPERS
+#
+
+default: help
+
+# Print the available recipes
+help:
+    @just --justfile {{justfile()}} --list
+
+# Install all tutorial dependencies
+install:
+    poetry install --no-root
+
+# Update all tutorial dependencies
+update:
+    poetry update
+
+# Execute the pre-commit hooks
+pre-commit:
+    poetry run pre-commit run -a
