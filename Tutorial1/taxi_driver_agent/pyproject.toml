@@ -9,7 +9,7 @@ packages = [{ include = "taxi_driver_agent" }]
 [tool.poetry.dependencies]
 python = "^3.11"
 gymnasium = "^0.29.1"
-numpy = "^2.0.0"
+numpy = "2.0.0"
 fire = "^0.6.0"
 taxi_driver_env = { path = "../taxi_driver_env/", develop = true }
 
