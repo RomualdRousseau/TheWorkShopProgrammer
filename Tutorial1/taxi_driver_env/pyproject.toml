@@ -4,7 +4,7 @@ version = "0.1.34"
 description = "Taxi Driver Environment"
 authors = ["Romuald Rousseau <romuald.rousseau@servier.com>"]
 readme = "README.md"
-packages = [{ include = "taxi_driver_agent" }]
+packages = [{ include = "taxi_driver_env" }]
 
 [tool.poetry.dependencies]
 python = "^3.11"

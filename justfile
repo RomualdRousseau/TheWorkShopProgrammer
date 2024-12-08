@@ -29,6 +29,6 @@ initialize:
 update:
     poetry update
 
-lint:
-    ruff format
-    ruff check --fix
+# Execute the pre-commit hooks
+pre-commit:
+    poetry run pre-commit run -a
