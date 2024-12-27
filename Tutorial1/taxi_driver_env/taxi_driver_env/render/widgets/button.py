@@ -60,7 +60,7 @@ class Button:
             pr.draw_rectangle_rounded(self.get_bound(), 0.5, 4, self.color_dn)
         else:
             pr.draw_rectangle_rounded(self.get_bound(), 0.5, 4, self.color_up)
-        pr.draw_rectangle_rounded_lines(self.get_bound(), 0.5, 4, 4, FG_COLOR)
+        pr.draw_rectangle_rounded_lines(self.get_bound(), 0.5, 4, FG_COLOR)
 
         hw = pr.measure_text(self.text, FONT_SIZE) / 2
         px = int(self.get_bound().x + self.get_bound().width / 2 - hw)
